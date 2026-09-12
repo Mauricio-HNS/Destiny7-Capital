@@ -1,6 +1,7 @@
 import { Decision, MarketTick, Side } from './types';
 import { MarketFeatures, SignalEngine } from './signal-engine';
 import { LearningEngine } from './learning-engine';
+import { AgentEconomy } from './agent-economy';
 
 export type AgentRole = 'QUANT' | 'MOMENTUM' | 'MEAN_REVERSION' | 'MACRO' | 'FLOW' | 'VOLATILITY' | 'RESEARCH' | 'PORTFOLIO' | 'EXECUTION' | 'RISK';
 
@@ -33,6 +34,7 @@ export class AgentEngine {
   readonly agents: AgentProfile[];
   readonly signals = new SignalEngine();
   readonly learning: LearningEngine;
+  readonly economy: AgentEconomy;
 
   constructor(count = 50) {
     this.agents = Array.from({ length: count }, (_, index) => {
@@ -40,11 +42,13 @@ export class AgentEngine {
       return { id: `agent-${String(index + 1).padStart(2, '0')}`, name: `${role.replace('_', ' ')} ${String(index + 1).padStart(2, '0')}`, role, riskWeight: 0.65 + ((index * 17) % 36) / 100, confidenceBias: ((hash(`${role}:${index}`) % 21) - 10) / 100 };
     });
     this.learning = new LearningEngine(this.agents);
+    this.economy = new AgentEconomy(this.agents.map((agent) => agent.id));
   }
 
   signal(agent: AgentProfile, ticks: MarketTick[]): AgentSignal {
     const latest = ticks[ticks.length - 1];
     const features = this.signals.features(ticks) as MarketFeatures;
+    this.economy.chargeThought(agent.id);
     let raw = features.momentum * 0.55 + features.volumePressure * 0.12;
     if (agent.role === 'MOMENTUM') raw = features.momentum * 0.95 + features.volumePressure * 0.2;
     if (agent.role === 'MEAN_REVERSION') raw = features.meanReversion * 0.9 - features.momentum * 0.25;
@@ -69,8 +73,10 @@ export class AgentEngine {
   decide(symbol: string, ticks: MarketTick[], now = Date.now()): Decision | null {
     const relevant = ticks.filter((tick) => tick.symbol === symbol).slice(-20);
     if (relevant.length < 2) return null;
-    const signals = this.agents.map((agent) => this.signal(agent, relevant));
-    const active = signals.filter((signal) => signal.side !== 'HOLD');
+    const signals = this.agents
+      .filter((agent) => this.economy.get(agent.id)?.alive)
+      .map((agent) => this.signal(agent, relevant));
+    const active = signals.filter((signal) => signal.side !== 'HOLD' && this.economy.get(signal.agentId)?.alive);
     if (!active.length) return null;
     const score = (side: Side) => active.filter((signal) => signal.side === side).reduce((sum, signal) => sum + signal.confidence * Math.abs(signal.strength) * this.learning.weight(signal.agentId), 0);
     const buyScore = score('BUY');
@@ -80,7 +86,24 @@ export class AgentEngine {
     const confidence = total ? Math.max(buyScore, sellScore) / total : 0;
     const supporters = active.filter((signal) => signal.side === side).sort((a, b) => (b.confidence * this.learning.weight(b.agentId)) - (a.confidence * this.learning.weight(a.agentId))).slice(0, 12);
     if (confidence < 0.58 || supporters.length < 4) return null;
+    for (const supporter of supporters) this.economy.chargeDecision(supporter.agentId);
     return { id: `decision-${now}-${symbol}`, agentIds: supporters.map((signal) => signal.agentId), symbol, side, quantity: 1, confidence, reason: `${supporters.length} agents reached ${side} consensus; weighted confidence ${(confidence * 100).toFixed(1)}%.`, state: 'APPROVE', approved: false, createdAt: now };
+  }
+
+  replicate(parentId: string): AgentProfile | null {
+    const child = this.economy.reproduce(parentId);
+    if (!child) return null;
+    const parent = this.agents.find((agent) => agent.id === parentId) ?? this.agents[0];
+    const role = parent.role;
+    const profile: AgentProfile = {
+      id: child.agentId,
+      name: `${role.replace('_', ' ')} ${child.agentId.slice(-2)}`,
+      role,
+      riskWeight: clamp(parent.riskWeight + (hash(child.agentId) % 11 - 5) / 100, 0.5, 1.2),
+      confidenceBias: clamp(parent.confidenceBias + (hash(`${child.agentId}:bias`) % 11 - 5) / 100, -0.2, 0.2),
+    };
+    this.agents.push(profile);
+    return profile;
   }
 
   symbols() { return SYMBOLS; }
