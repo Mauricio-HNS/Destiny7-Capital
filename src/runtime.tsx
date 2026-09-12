@@ -5,6 +5,7 @@ import './styles.css';
 import './floor-premium.css';
 import './visual-upgrade.css';
 import './real-office.css';
+import './pastel-office.css';
 
 type Agent={id:number;name:string;role:string;status:string;symbol:string;pnl:number;skill:number;risk:number;position:number;action:string};
 const roles=['QUANT','TRADER','RISK','MACRO','EXECUTION','RESEARCH','OPTIONS','FLOW','NEWS','PORTFOLIO'];
