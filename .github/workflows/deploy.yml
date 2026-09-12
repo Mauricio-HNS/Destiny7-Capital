@@ -19,6 +19,7 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - run: rm -rf dist
       - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
