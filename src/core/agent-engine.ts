@@ -1,17 +1,8 @@
 import { Decision, MarketTick, Side } from './types';
 import { MarketFeatures, SignalEngine } from './signal-engine';
+import { LearningEngine } from './learning-engine';
 
-export type AgentRole =
-  | 'QUANT'
-  | 'MOMENTUM'
-  | 'MEAN_REVERSION'
-  | 'MACRO'
-  | 'FLOW'
-  | 'VOLATILITY'
-  | 'RESEARCH'
-  | 'PORTFOLIO'
-  | 'EXECUTION'
-  | 'RISK';
+export type AgentRole = 'QUANT' | 'MOMENTUM' | 'MEAN_REVERSION' | 'MACRO' | 'FLOW' | 'VOLATILITY' | 'RESEARCH' | 'PORTFOLIO' | 'EXECUTION' | 'RISK';
 
 export interface AgentProfile {
   id: string;
@@ -33,54 +24,28 @@ export interface AgentSignal {
 }
 
 const SYMBOLS = ['NVDA', 'MSFT', 'AAPL', 'BTC', 'SPX'];
-const ROLES: AgentRole[] = [
-  'QUANT',
-  'MOMENTUM',
-  'MEAN_REVERSION',
-  'MACRO',
-  'FLOW',
-  'VOLATILITY',
-  'RESEARCH',
-  'PORTFOLIO',
-  'EXECUTION',
-  'RISK',
-];
+const ROLES: AgentRole[] = ['QUANT', 'MOMENTUM', 'MEAN_REVERSION', 'MACRO', 'FLOW', 'VOLATILITY', 'RESEARCH', 'PORTFOLIO', 'EXECUTION', 'RISK'];
 
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function hash(value: string) {
-  let h = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return Math.abs(h >>> 0);
-}
+function clamp(value: number, min: number, max: number) { return Math.max(min, Math.min(max, value)); }
+function hash(value: string) { let h = 2166136261; for (let i = 0; i < value.length; i += 1) { h ^= value.charCodeAt(i); h = Math.imul(h, 16777619); } return Math.abs(h >>> 0); }
 
 export class AgentEngine {
   readonly agents: AgentProfile[];
   readonly signals = new SignalEngine();
+  readonly learning: LearningEngine;
 
   constructor(count = 50) {
     this.agents = Array.from({ length: count }, (_, index) => {
       const role = ROLES[index % ROLES.length];
-      return {
-        id: `agent-${String(index + 1).padStart(2, '0')}`,
-        name: `${role.replace('_', ' ')} ${String(index + 1).padStart(2, '0')}`,
-        role,
-        riskWeight: 0.65 + ((index * 17) % 36) / 100,
-        confidenceBias: ((hash(`${role}:${index}`) % 21) - 10) / 100,
-      };
+      return { id: `agent-${String(index + 1).padStart(2, '0')}`, name: `${role.replace('_', ' ')} ${String(index + 1).padStart(2, '0')}`, role, riskWeight: 0.65 + ((index * 17) % 36) / 100, confidenceBias: ((hash(`${role}:${index}`) % 21) - 10) / 100 };
     });
+    this.learning = new LearningEngine(this.agents);
   }
 
   signal(agent: AgentProfile, ticks: MarketTick[]): AgentSignal {
     const latest = ticks[ticks.length - 1];
     const features = this.signals.features(ticks) as MarketFeatures;
     let raw = features.momentum * 0.55 + features.volumePressure * 0.12;
-
     if (agent.role === 'MOMENTUM') raw = features.momentum * 0.95 + features.volumePressure * 0.2;
     if (agent.role === 'MEAN_REVERSION') raw = features.meanReversion * 0.9 - features.momentum * 0.25;
     if (agent.role === 'FLOW') raw = features.volumePressure * 0.7 + features.momentum * 0.3;
@@ -93,62 +58,30 @@ export class AgentEngine {
 
     const seed = hash(`${agent.id}:${latest.symbol}:${latest.timestamp}`);
     const noise = ((seed % 1000) / 1000 - 0.5) * 0.08;
-    const strength = clamp(raw + noise, -1, 1);
-    const confidence = clamp(0.55 + Math.abs(strength) * 0.4 + agent.confidenceBias, 0.1, 0.99);
+    const learningWeight = this.learning.weight(agent.id);
+    const strength = clamp((raw + noise) * (0.9 + learningWeight * 0.1), -1, 1);
+    const confidence = clamp(0.55 + Math.abs(strength) * 0.4 + agent.confidenceBias + (learningWeight - 1) * 0.06, 0.1, 0.99);
     const side: Side | 'HOLD' = strength > 0.16 ? 'BUY' : strength < -0.16 ? 'SELL' : 'HOLD';
 
-    return {
-      agentId: agent.id,
-      role: agent.role,
-      symbol: latest.symbol,
-      side,
-      strength,
-      confidence,
-      reason: `${agent.role}: ${features.regime} regime, momentum ${(features.momentum * 100).toFixed(2)}%, volatility ${(features.volatility * 100).toFixed(2)}%.`,
-      timestamp: latest.timestamp,
-    };
+    return { agentId: agent.id, role: agent.role, symbol: latest.symbol, side, strength, confidence, reason: `${agent.role}: ${features.regime} regime, momentum ${(features.momentum * 100).toFixed(2)}%, volatility ${(features.volatility * 100).toFixed(2)}%.`, timestamp: latest.timestamp };
   }
 
   decide(symbol: string, ticks: MarketTick[], now = Date.now()): Decision | null {
     const relevant = ticks.filter((tick) => tick.symbol === symbol).slice(-20);
     if (relevant.length < 2) return null;
-
     const signals = this.agents.map((agent) => this.signal(agent, relevant));
     const active = signals.filter((signal) => signal.side !== 'HOLD');
     if (!active.length) return null;
-
-    const buyScore = active
-      .filter((signal) => signal.side === 'BUY')
-      .reduce((sum, signal) => sum + signal.confidence * Math.abs(signal.strength), 0);
-    const sellScore = active
-      .filter((signal) => signal.side === 'SELL')
-      .reduce((sum, signal) => sum + signal.confidence * Math.abs(signal.strength), 0);
+    const score = (side: Side) => active.filter((signal) => signal.side === side).reduce((sum, signal) => sum + signal.confidence * Math.abs(signal.strength) * this.learning.weight(signal.agentId), 0);
+    const buyScore = score('BUY');
+    const sellScore = score('SELL');
     const total = buyScore + sellScore;
     const side: Side = buyScore >= sellScore ? 'BUY' : 'SELL';
-    const winningScore = Math.max(buyScore, sellScore);
-    const confidence = total ? winningScore / total : 0;
-    const supporters = active
-      .filter((signal) => signal.side === side)
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, 12);
-
+    const confidence = total ? Math.max(buyScore, sellScore) / total : 0;
+    const supporters = active.filter((signal) => signal.side === side).sort((a, b) => (b.confidence * this.learning.weight(b.agentId)) - (a.confidence * this.learning.weight(a.agentId))).slice(0, 12);
     if (confidence < 0.58 || supporters.length < 4) return null;
-
-    return {
-      id: `decision-${now}-${symbol}`,
-      agentIds: supporters.map((signal) => signal.agentId),
-      symbol,
-      side,
-      quantity: 1,
-      confidence,
-      reason: `${supporters.length} agents reached ${side} consensus; weighted confidence ${(confidence * 100).toFixed(1)}%.`,
-      state: 'APPROVE',
-      approved: false,
-      createdAt: now,
-    };
+    return { id: `decision-${now}-${symbol}`, agentIds: supporters.map((signal) => signal.agentId), symbol, side, quantity: 1, confidence, reason: `${supporters.length} agents reached ${side} consensus; weighted confidence ${(confidence * 100).toFixed(1)}%.`, state: 'APPROVE', approved: false, createdAt: now };
   }
 
-  symbols() {
-    return SYMBOLS;
-  }
+  symbols() { return SYMBOLS; }
 }
