@@ -18,30 +18,35 @@ export class TradingEngine {
       maxOrderValue: 25_000,
       maxDailyLoss: 50_000,
       maxConcurrentPositions: 12,
+      maxDrawdown: 0.15,
       ...limits,
     });
   }
 
   execute(decision: Decision): Order {
     const tick = this.market.tick(decision.symbol);
-    const gate = this.risk.validate(decision, this.account, tick.price);
+    const prices = this.market.snapshot();
+    const gate = this.risk.validate(decision, this.account, tick.price, prices);
+    const now = Date.now();
     const order: Order = {
-      id: `ORD-${Date.now()}-${this.orders.length + 1}`,
-      agentId: decision.agentIds[0] ?? 0,
+      id: `ORD-${now}-${this.orders.length + 1}`,
+      agentId: decision.agentIds[0] ?? 'system',
       symbol: decision.symbol,
       side: decision.side,
       type: 'MARKET',
       quantity: decision.quantity,
       requestedPrice: tick.price,
       status: gate.approved ? 'FILLED' : 'REJECTED',
-      createdAt: Date.now(),
+      createdAt: now,
       reason: gate.reason,
     };
+
     if (gate.approved) {
       order.filledPrice = tick.price;
-      order.filledAt = Date.now();
+      order.filledAt = now;
       this.account = this.portfolio.fill(this.account, order);
     }
+
     this.orders.push(order);
     return order;
   }
@@ -51,5 +56,9 @@ export class TradingEngine {
     for (const symbol of symbols) prices[symbol] = this.market.tick(symbol).price;
     this.account = this.portfolio.markToMarket(this.account, prices);
     return this.account;
+  }
+
+  resetDailyRisk() {
+    this.account = this.portfolio.resetDailyBaseline(this.account);
   }
 }
