@@ -30,11 +30,16 @@ export class AutonomousCompany {
 
   runCycle(symbol: string): CompanyCycle {
     const tick = this.trading.market.tick(symbol);
-    const result = this.room.deliberate(symbol, [tick], tick.timestamp);
+    const marketHistory = this.trading.market.history(symbol, 50);
+    const result = this.room.deliberate(symbol, marketHistory, tick.timestamp);
 
     if (result.decision?.approved) {
       this.trading.execute(result.decision);
     }
+
+    // Mark the whole portfolio after every market event so the company always
+    // has an up-to-date view of equity, exposure and unrealized P&L.
+    this.trading.mark(this.agents.symbols());
 
     const cycle: CompanyCycle = {
       timestamp: tick.timestamp,
