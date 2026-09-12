@@ -37,9 +37,23 @@ export class AutonomousCompany {
       this.trading.execute(result.decision);
     }
 
-    // Mark the whole portfolio after every market event so the company always
-    // has an up-to-date view of equity, exposure and unrealized P&L.
     this.trading.mark(this.agents.symbols());
+
+    // Closed trades are the ground truth for learning. The P&L of each
+    // decision is attributed to every participating agent so future signals
+    // can become stronger or weaker from actual outcomes.
+    for (const trade of this.trading.drainClosedTrades()) {
+      const pnl = trade.realizedPnl ?? 0;
+      for (const agentId of trade.agentIds) {
+        this.agents.learning.record({
+          agentId,
+          symbol: trade.symbol,
+          side: trade.side,
+          pnl: pnl / Math.max(1, trade.agentIds.length),
+          timestamp: trade.closedAt ?? Date.now(),
+        });
+      }
+    }
 
     const cycle: CompanyCycle = {
       timestamp: tick.timestamp,
