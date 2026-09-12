@@ -12,9 +12,10 @@ export interface CompanyCycle {
 }
 
 /**
- * The company owns the trading process. There is intentionally no user
- * trading mode or manual trade command here. The user observes the company;
- * agents decide what to study, when to act and whether risk allows an order.
+ * The company owns the trading process. Agents have their own survival
+ * capital: thinking and decisions cost money, profitable outcomes replenish
+ * capital, insolvency deactivates the agent, and successful agents can fund
+ * new generations of agents.
  */
 export class AutonomousCompany {
   readonly agents: AgentEngine;
@@ -34,24 +35,34 @@ export class AutonomousCompany {
     const result = this.room.deliberate(symbol, marketHistory, tick.timestamp);
 
     if (result.decision?.approved) {
+      for (const agentId of result.decision.agentIds) this.agents.economy.chargeExecution(agentId);
       this.trading.execute(result.decision);
     }
 
     this.trading.mark(this.agents.symbols());
 
-    // Closed trades are the ground truth for learning. The P&L of each
-    // decision is attributed to every participating agent so future signals
-    // can become stronger or weaker from actual outcomes.
+    // Closed trades are the ground truth for both learning and survival.
+    // Every participating agent receives its share of the actual outcome.
     for (const trade of this.trading.drainClosedTrades()) {
       const pnl = trade.realizedPnl ?? 0;
+      const share = pnl / Math.max(1, trade.agentIds.length);
       for (const agentId of trade.agentIds) {
         this.agents.learning.record({
           agentId,
           symbol: trade.symbol,
           side: trade.side,
-          pnl: pnl / Math.max(1, trade.agentIds.length),
+          pnl: share,
           timestamp: trade.closedAt ?? Date.now(),
         });
+        this.agents.economy.recordTrade(agentId, share);
+      }
+    }
+
+    // Profitable agents can reproduce. Reproduction is not guaranteed: it
+    // consumes the parent's own capital and therefore competes with survival.
+    for (const state of this.agents.economy.alive()) {
+      if (state.capital >= this.agents.economy.config.reproductionThreshold) {
+        this.agents.replicate(state.agentId);
       }
     }
 
