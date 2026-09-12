@@ -2,6 +2,7 @@ import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Activity,BrainCircuit,Building2,CircleDollarSign,Cpu,Gauge,LineChart,ShieldCheck,Users,Wallet,Zap} from 'lucide-react';
 import './styles.css';
+import './floor-premium.css';
 
 type Agent={id:number;name:string;role:string;status:string;symbol:string;pnl:number;skill:number;risk:number;position:number;action:string};
 const roles=['QUANT','TRADER','RISK','MACRO','EXECUTION','RESEARCH','OPTIONS','FLOW','NEWS','PORTFOLIO'];
