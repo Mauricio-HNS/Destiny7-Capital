@@ -1,4 +1,5 @@
 import { Decision, MarketTick, Side } from './types';
+import { MarketFeatures, SignalEngine } from './signal-engine';
 
 export type AgentRole =
   | 'QUANT'
@@ -60,6 +61,7 @@ function hash(value: string) {
 
 export class AgentEngine {
   readonly agents: AgentProfile[];
+  readonly signals = new SignalEngine();
 
   constructor(count = 50) {
     this.agents = Array.from({ length: count }, (_, index) => {
@@ -76,22 +78,24 @@ export class AgentEngine {
 
   signal(agent: AgentProfile, ticks: MarketTick[]): AgentSignal {
     const latest = ticks[ticks.length - 1];
-    const previous = ticks[Math.max(0, ticks.length - 2)];
-    const change = previous?.price ? latest.price / previous.price - 1 : 0;
+    const features = this.signals.features(ticks) as MarketFeatures;
+    let raw = features.momentum * 0.55 + features.volumePressure * 0.12;
+
+    if (agent.role === 'MOMENTUM') raw = features.momentum * 0.95 + features.volumePressure * 0.2;
+    if (agent.role === 'MEAN_REVERSION') raw = features.meanReversion * 0.9 - features.momentum * 0.25;
+    if (agent.role === 'FLOW') raw = features.volumePressure * 0.7 + features.momentum * 0.3;
+    if (agent.role === 'VOLATILITY') raw = features.volatility > 0.008 ? -features.momentum * 0.45 : features.momentum * 0.2;
+    if (agent.role === 'MACRO') raw = latest.symbol === 'SPX' ? features.momentum * 0.8 : features.momentum * 0.35;
+    if (agent.role === 'PORTFOLIO') raw = features.momentum * 0.25 + features.meanReversion * 0.35;
+    if (agent.role === 'EXECUTION') raw = features.momentum * 0.3 + features.volumePressure * 0.35;
+    if (agent.role === 'RISK') raw = features.volatility > 0.008 ? -Math.sign(features.momentum) * 0.3 : features.momentum * 0.2;
+    if (agent.role === 'RESEARCH') raw = features.return5 * 18 + features.meanReversion * 0.25;
+
     const seed = hash(`${agent.id}:${latest.symbol}:${latest.timestamp}`);
     const noise = ((seed % 1000) / 1000 - 0.5) * 0.08;
-
-    let raw = change * 25 + noise;
-    if (agent.role === 'MOMENTUM') raw += change * 40;
-    if (agent.role === 'MEAN_REVERSION') raw -= change * 45;
-    if (agent.role === 'FLOW') raw += (latest.volume % 1000) / 10000 - 0.05;
-    if (agent.role === 'VOLATILITY') raw += Math.abs(change) > 0.012 ? -Math.sign(change) * 0.15 : change * 5;
-    if (agent.role === 'MACRO') raw += latest.symbol === 'SPX' ? change * 15 : 0;
-    if (agent.role === 'RISK') raw *= 0.55;
-
-    const strength = clamp(raw, -1, 1);
+    const strength = clamp(raw + noise, -1, 1);
     const confidence = clamp(0.55 + Math.abs(strength) * 0.4 + agent.confidenceBias, 0.1, 0.99);
-    const side: Side | 'HOLD' = strength > 0.12 ? 'BUY' : strength < -0.12 ? 'SELL' : 'HOLD';
+    const side: Side | 'HOLD' = strength > 0.16 ? 'BUY' : strength < -0.16 ? 'SELL' : 'HOLD';
 
     return {
       agentId: agent.id,
@@ -100,7 +104,7 @@ export class AgentEngine {
       side,
       strength,
       confidence,
-      reason: `${agent.role} detected ${change >= 0 ? 'positive' : 'negative'} short-term pressure (${(change * 100).toFixed(2)}%).`,
+      reason: `${agent.role}: ${features.regime} regime, momentum ${(features.momentum * 100).toFixed(2)}%, volatility ${(features.volatility * 100).toFixed(2)}%.`,
       timestamp: latest.timestamp,
     };
   }
