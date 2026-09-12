@@ -21,7 +21,7 @@ export interface Position {
 
 export interface Order {
   id: string;
-  agentId: number;
+  agentId: string;
   symbol: string;
   side: Side;
   type: OrderType;
@@ -43,6 +43,8 @@ export interface AccountState {
   fees: number;
   drawdown: number;
   peakEquity: number;
+  dailyStartingEquity: number;
+  dailyRealizedPnl: number;
   positions: Record<string, Position>;
 }
 
@@ -52,11 +54,12 @@ export interface RiskLimits {
   maxOrderValue: number;
   maxDailyLoss: number;
   maxConcurrentPositions: number;
+  maxDrawdown: number;
 }
 
 export interface Decision {
   id: string;
-  agentIds: number[];
+  agentIds: string[];
   symbol: string;
   side: Side;
   quantity: number;
