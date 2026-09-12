@@ -22,6 +22,8 @@ export interface Position {
 export interface Order {
   id: string;
   agentId: string;
+  agentIds?: string[];
+  decisionId?: string;
   symbol: string;
   side: Side;
   type: OrderType;
@@ -32,6 +34,23 @@ export interface Order {
   createdAt: number;
   filledAt?: number;
   reason: string;
+}
+
+export interface TradeRecord {
+  id: string;
+  decisionId: string;
+  agentIds: string[];
+  symbol: string;
+  side: Side;
+  quantity: number;
+  entryPrice: number;
+  exitPrice?: number;
+  realizedPnl?: number;
+  openedAt: number;
+  closedAt?: number;
+  holdingCycles: number;
+  status: 'OPEN' | 'CLOSED';
+  exitReason?: string;
 }
 
 export interface AccountState {
