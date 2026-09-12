@@ -4,47 +4,114 @@ export class PortfolioEngine {
   constructor(private readonly feeRate = 0.0005, private readonly slippageRate = 0.0002) {}
 
   createAccount(startingCapital: number): AccountState {
-    return {cash: startingCapital, equity: startingCapital, startingCapital, realizedPnl: 0, unrealizedPnl: 0, fees: 0, drawdown: 0, peakEquity: startingCapital, positions: {}};
+    return {
+      cash: startingCapital,
+      equity: startingCapital,
+      startingCapital,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      fees: 0,
+      drawdown: 0,
+      peakEquity: startingCapital,
+      dailyStartingEquity: startingCapital,
+      dailyRealizedPnl: 0,
+      positions: {},
+    };
   }
 
   fill(account: AccountState, order: Order): AccountState {
-    const signed = order.side === 'BUY' ? 1 : -1;
-    const fillPrice = order.requestedPrice * (1 + signed * this.slippageRate);
-    const value = fillPrice * order.quantity;
-    const fee = value * this.feeRate;
-    const current = account.positions[order.symbol] ?? {symbol: order.symbol, quantity: 0, averagePrice: 0, realizedPnl: 0, unrealizedPnl: 0};
+    const direction = order.side === 'BUY' ? 1 : -1;
+    const fillPrice = order.requestedPrice * (1 + direction * this.slippageRate);
+    const quantity = Math.max(0, order.quantity);
+    const current = account.positions[order.symbol] ?? this.emptyPosition(order.symbol);
+    const oldQty = current.quantity;
+    const oldAvg = current.averagePrice;
+    const signedQty = direction * quantity;
 
-    let realized = account.realizedPnl;
-    let nextQty = current.quantity + signed * order.quantity;
-    let avg = current.averagePrice;
+    let nextQty = oldQty + signedQty;
+    let realizedDelta = 0;
 
-    if (current.quantity !== 0 && Math.sign(current.quantity) !== Math.sign(nextQty)) {
-      const closingQty = Math.min(Math.abs(current.quantity), order.quantity);
-      realized += (fillPrice - current.averagePrice) * closingQty * Math.sign(current.quantity);
+    // Closing an existing position realizes P&L. Any remainder opens/reverses.
+    if (oldQty !== 0 && Math.sign(oldQty) !== Math.sign(signedQty)) {
+      const closingQty = Math.min(Math.abs(oldQty), quantity);
+      realizedDelta = (fillPrice - oldAvg) * closingQty * Math.sign(oldQty);
     }
 
-    if (nextQty === 0) avg = 0;
-    else if (Math.sign(current.quantity) === Math.sign(nextQty)) {
-      const oldValue = Math.abs(current.quantity) * current.averagePrice;
-      avg = (oldValue + value) / Math.abs(nextQty);
-    } else avg = fillPrice;
+    let nextAvg = oldAvg;
+    const sameDirection = oldQty !== 0 && Math.sign(oldQty) === Math.sign(signedQty);
+    const reversal = oldQty !== 0 && Math.sign(oldQty) !== Math.sign(nextQty) && nextQty !== 0;
 
-    const next: Position = {...current, quantity: nextQty, averagePrice: avg, realizedPnl: realized - account.realizedPnl};
-    const positions = {...account.positions, [order.symbol]: next};
-    const cash = account.cash - signed * value - fee;
-    const updated = {...account, cash, realizedPnl: realized, fees: account.fees + fee, positions};
-    return this.markToMarket(updated, {[order.symbol]: fillPrice});
+    if (nextQty === 0) {
+      nextAvg = 0;
+    } else if (sameDirection) {
+      nextAvg = (Math.abs(oldQty) * oldAvg + quantity * fillPrice) / Math.abs(nextQty);
+    } else if (reversal) {
+      nextAvg = fillPrice;
+    } else if (oldQty === 0) {
+      nextAvg = fillPrice;
+    }
+
+    const value = fillPrice * quantity;
+    const fee = value * this.feeRate;
+    const realizedPnl = account.realizedPnl + realizedDelta;
+    const position: Position = {
+      symbol: order.symbol,
+      quantity: nextQty,
+      averagePrice: nextAvg,
+      realizedPnl: current.realizedPnl + realizedDelta,
+      unrealizedPnl: 0,
+    };
+
+    const positions = {...account.positions};
+    if (nextQty === 0) delete positions[order.symbol];
+    else positions[order.symbol] = position;
+
+    const cash = account.cash - direction * value - fee;
+    return this.markToMarket(
+      {
+        ...account,
+        cash,
+        realizedPnl,
+        fees: account.fees + fee,
+        positions,
+      },
+      {[order.symbol]: fillPrice},
+    );
   }
 
   markToMarket(account: AccountState, prices: Record<string, number>): AccountState {
     let unrealized = 0;
-    for (const position of Object.values(account.positions)) {
-      const price = prices[position.symbol];
-      if (price !== undefined) position.unrealizedPnl = (price - position.averagePrice) * position.quantity;
+    let marketValue = 0;
+
+    const positions = {...account.positions};
+    for (const [symbol, position] of Object.entries(positions)) {
+      const price = prices[symbol];
+      if (price !== undefined) {
+        position.unrealizedPnl = (price - position.averagePrice) * position.quantity;
+      }
       unrealized += position.unrealizedPnl;
+      marketValue += position.quantity * (price ?? position.averagePrice);
     }
-    const equity = account.cash + Object.values(account.positions).reduce((s, p) => s + p.quantity * (prices[p.symbol] ?? p.averagePrice), 0);
+
+    const equity = account.cash + marketValue;
     const peakEquity = Math.max(account.peakEquity, equity);
-    return {...account, equity, unrealizedPnl: unrealized, peakEquity, drawdown: peakEquity ? (peakEquity - equity) / peakEquity : 0};
+    const drawdown = peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0;
+
+    return {
+      ...account,
+      positions,
+      equity,
+      unrealizedPnl: unrealized,
+      peakEquity,
+      drawdown,
+    };
+  }
+
+  resetDailyBaseline(account: AccountState): AccountState {
+    return {...account, dailyStartingEquity: account.equity, dailyRealizedPnl: 0};
+  }
+
+  private emptyPosition(symbol: string): Position {
+    return {symbol, quantity: 0, averagePrice: 0, realizedPnl: 0, unrealizedPnl: 0};
   }
 }
